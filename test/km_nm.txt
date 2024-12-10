@@ -1,0 +1,10 @@
+         U _GLOBAL_OFFSET_TABLE_
+00000000 t test02
+00000000 d videoMem
+00000000 T __x86.get_pc_thunk.ax
+00000004 d str
+0000006a t test01
+00000097 t test00
+000000b2 t start_os
+000000c7 t test
+000000e6 t putChar
