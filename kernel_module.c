@@ -10,8 +10,11 @@ const uint32_t FS_DATA_ADDRESS = 0x100100;        // Адрес на масси�
                                                   // до 1004FF (1024 байта)
 const uint32_t MEMORY_BITMAP = 0x100500;          // Адрес карты свободных страниц(по 4кб) памяти. 1 бит на страницу.
                                                   // 1 - страница занята, 0 - свободна. До 1204FF
-const uint32_t OPEN_FILES_DESCRIPTORS = 0x120500; // Дескрипторы открытых файлов по 24 байта. 1024 дескриптора
-                                                  // до 1264FF
+const uint32_t OPEN_FILES_DESCRIPTORS = 0x120500; // Дескрипторы открытых файлов по 28 байт. 1024 дескриптора
+                                                  // до 1274FF
+const uint32_t FAT_ADDRESS = 0x127500;            // Адрес таблицы FAT системного диска 128 кб
+                                                  // до 1474FF
+
 const uint32_t FREE_MEMORY_BEGINS = 0x400000; // начало области памяти, не занятой ОС. Здесь начинаются страницы памяти
 
 static uint32_t avalableMemoryMb = 0;    // доступная оперативная память в Мб
@@ -78,9 +81,9 @@ typedef struct
   uint16_t writeDate;
   uint16_t clusterNHLow;
   uint32_t size;
-} FileDecriptorRecord;
+} FileDescriptorRecord;
 #pragma pack(pop)
-FileDecriptorRecord *FileDescriptorFS;
+FileDescriptorRecord *FileDescriptorFS;
 
 typedef struct
 {
@@ -91,7 +94,9 @@ typedef struct
   uint32_t fileSize;     // размер файла
   uint32_t bufferPtr;    // адрес буфера, куда загружен очередной кластер
   uint32_t attr;         // атрибуты файла
-} OF_DESC;
+  uint16_t dirCluster;   // первый кластер директории, где находится файл
+  uint16_t reserved;
+} FILE;
 
 typedef struct
 {
@@ -130,11 +135,17 @@ static void deleteMemoryBlock(uint32_t startPage, uint32_t memorySize);
 static uint32_t getPageAddress(uint32_t pageN);
 static void __stack_chk_fail_local();
 static int isCorrectSymbol(char s);
+static int strlen(char *s);
+static int strcmp(char *s1, char *s2);
+static FileDescriptorRecord getFileDSC(char *fn);
+static void loadFAT();
+static FileDescriptorRecord getfileInDirDSC(FileDescriptorRecord dirDSC, char *fn);
 
 // static void readSectorTest();
 
 // function 0
 static char ramDetectedStr[22] = " Mb of RAM detected\n";
+static char scmp[22] = " Mb of RAM detected\n";
 static char space[3] = ": ";
 static char newLine[2] = "\n";
 char s1[12];
@@ -152,6 +163,7 @@ static void _start()
 
   readPT();
   readFSInfo();
+  loadFAT();
 
   uintToStr(s1, (PT + 0)->firstSector);
   println(s1);
@@ -159,16 +171,33 @@ static void _start()
   uintToStr(s1, (FSInfo + 0)->descN);
   println(s1);
 
-  uint32_t rootDirAddress = getPageAddress(getFreeMemoryBlock((FSInfo + 0)->descN * 512));
-  println(uintToStr(s1, rootDirAddress));
-  readRootDir(0, rootDirAddress);
-  FileDecriptorRecord *dr = (FileDecriptorRecord *)rootDirAddress;
-  char fn[13];
-  for (int i = 0; i < 512; i++)
-  {
-    if (isCorrectSymbol((dr + i)->filename[0]))
-      println(fileNameDSCToStr(fn, (dr + i)->filename));
-  }
+  println(intToStr(s1, strcmp(scmp, space)));
+  println(intToStr(s1, strcmp(space, scmp)));
+  println(intToStr(s1, strcmp(ramDetectedStr, scmp)));
+
+  FileDescriptorRecord fd;
+  fd.clusterNHLow = 0;
+  char fn[] = "TEST";
+  char fn3[] = "NC.ICO";
+  char fn2[13];
+  fd = getfileInDirDSC(fd, fn);
+  println(fileNameDSCToStr(fn2, fd.filename));
+  fd = getfileInDirDSC(fd, fn3);
+  println(fileNameDSCToStr(fn2, fd.filename));
+
+  // FileDescriptorRecord fd = getFileDSC(s1);
+  // println(intToStr(s1, fd.clusterNHigh));
+
+  // uint32_t rootDirAddress = getPageAddress(getFreeMemoryBlock((FSInfo + 0)->descN * 512));
+  // println(uintToStr(s1, rootDirAddress));
+  // readRootDir(0, rootDirAddress);
+  // FileDescriptorRecord *dr = (FileDescriptorRecord *)rootDirAddress;
+  // char fn[13];
+  // for (int i = 0; i < 512; i++)
+  // {
+  //   if (isCorrectSymbol((dr + i)->filename[0]))
+  //     println(fileNameDSCToStr(fn, (dr + i)->filename));
+  // }
 
   // for (int i = 0; i < 2000; i++)
   // {
@@ -272,7 +301,7 @@ static char *intToStr(char *c, int n)
     j--;
   }
   if (j >= 0)
-    for (int i = 0; i < 10 - j; i++)
+    for (int i = 0; i < 11 - j; i++)
     {
       c[i] = c[j + i + 1];
     }
@@ -740,6 +769,165 @@ static uint32_t getPageAddress(uint32_t pageN)
   return addr;
 }
 
+// 30 заглушка для совместимости
 static void __stack_chk_fail_local()
+{
+}
+
+// 31 возвращает длину строки
+static int strlen(char *s)
+{
+  int i = 0;
+  while (s[i])
+    i++;
+  return i;
+}
+
+// 32 сравнивает строки
+static int strcmp(char *s1, char *s2)
+{
+  int cmp = 0;
+  if (strlen(s1) && strlen(s2))
+  {
+    int i = 0;
+    while (s1[i] && s2[i])
+    {
+      if (s1[i] > s2[i])
+      {
+        cmp = 1;
+        break;
+      }
+      else if (s1[i] < s2[i])
+      {
+        cmp = -1;
+        break;
+      }
+      i++;
+    }
+    if (cmp == 0 && s1[i] == 0 && s2[i] == 0)
+      return 0;
+    else if (cmp == 0 && s1[i] > 0 && s2[i] == 0)
+      return 1;
+    else if (cmp == 0 && s1[i] == 0 && s2[i] > 0)
+      return -1;
+    else
+      return cmp;
+  }
+  else if (strlen(s1) > 0 && strlen(s2) == 0)
+    return 1;
+  else if (strlen(s1) == 0 && strlen(s2) > 0)
+    return -1;
+  else
+    return 0;
+}
+
+// 33 закрузка FAT системного диска
+static void loadFAT()
+{
+  uint32_t n = (FSInfo + 0)->hiddenSectorsN + (FSInfo + 0)->resSect;
+  uint32_t sectors = (FSInfo + 0)->sectPerFAT;
+  readSectors(n, sectors, FAT_ADDRESS);
+}
+
+// 34 находит файл в папке, заданной дескриптором. Возвращает дескриптор файла
+static FileDescriptorRecord getfileInDirDSC(FileDescriptorRecord dirDSC, char *fn)
+{
+  FileDescriptorRecord fdr;
+  fdr.filename[0] = 0;
+  uint16_t *FAT = (uint16_t *)FAT_ADDRESS;
+  FileDescriptorRecord *fd;
+  uint32_t DirAddress = 0, memSize = 0, firstPage = 0;
+  uint32_t clusterSize = (FSInfo + 0)->sectorsPerCluster;
+  clusterSize <<= 9;
+  char fn2[13];
+  if (dirDSC.clusterNHLow == 0)
+  {
+    memSize = (FSInfo + 0)->descN;
+    memSize <<= 5;
+    firstPage = getFreeMemoryBlock(memSize);
+    DirAddress = getPageAddress(firstPage);
+    readRootDir(0, DirAddress);
+    fd = (FileDescriptorRecord *)DirAddress;
+    uint32_t nn = 0;
+    while ((fd + nn)->filename[0])
+    {
+      if (strcmp(fileNameDSCToStr(fn2, (fd + nn)->filename), fn) == 0)
+      {
+        fdr.attr = (fd + nn)->attr;
+        fdr.clusterNHigh = (fd + nn)->clusterNHigh;
+        fdr.clusterNHLow = (fd + nn)->clusterNHLow;
+        fdr.extTime = (fd + nn)->extTime;
+        fdr.fCreationDate = (fd + nn)->fCreationDate;
+        fdr.fCreationTime = (fd + nn)->fCreationTime;
+        // fdr.filename = (fd + nn)->attr;
+        for (int i = 0; i < 11; i++)
+          fdr.filename[i] = (fd + nn)->filename[i];
+        fdr.lastUseDate = (fd + nn)->lastUseDate;
+        fdr.size = (fd + nn)->size;
+        fdr.writeDate = (fd + nn)->writeDate;
+        fdr.writeTime = (fd + nn)->writeTime;
+        return fdr;
+      }
+      nn++;
+    }
+    deleteMemoryBlock(firstPage, memSize);
+  }
+  else
+  {
+    uint16_t nCl = dirDSC.clusterNHLow;
+    uint16_t nextCluster = FAT[nCl];
+    firstPage = getFreeMemoryBlock(clusterSize);
+    DirAddress = getPageAddress(firstPage);
+
+    while (1)
+    {
+      readCluster(0, nCl, DirAddress);
+      fd = (FileDescriptorRecord *)DirAddress;
+      uint32_t nn = 0;
+      while ((fd + nn)->filename[0])
+      {
+        if (strcmp(fileNameDSCToStr(fn2, (fd + nn)->filename), fn) == 0)
+        {
+          fdr.attr = (fd + nn)->attr;
+          fdr.clusterNHigh = (fd + nn)->clusterNHigh;
+          fdr.clusterNHLow = (fd + nn)->clusterNHLow;
+          fdr.extTime = (fd + nn)->extTime;
+          fdr.fCreationDate = (fd + nn)->fCreationDate;
+          fdr.fCreationTime = (fd + nn)->fCreationTime;
+          // fdr.filename = (fd + nn)->attr;
+          for (int i = 0; i < 11; i++)
+            fdr.filename[i] = (fd + nn)->filename[i];
+          fdr.lastUseDate = (fd + nn)->lastUseDate;
+          fdr.size = (fd + nn)->size;
+          fdr.writeDate = (fd + nn)->writeDate;
+          fdr.writeTime = (fd + nn)->writeTime;
+          return fdr;
+        }
+        nn++;
+      }
+      if (nextCluster == 0xFFFF)
+        break;
+      else
+      {
+        nCl = nextCluster;
+        nextCluster = FAT[nCl];
+      }
+    }
+    deleteMemoryBlock(firstPage, clusterSize);
+  }
+  return fdr;
+}
+
+// 35 возвращает дескриптор файла по его пути
+static FileDescriptorRecord
+getFileDSC(char *fn)
+{
+  FileDescriptorRecord fdr;
+
+  return fdr;
+}
+
+// 36 копирует строку
+static char *strcopy()
 {
 }
