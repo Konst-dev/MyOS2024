@@ -137,7 +137,7 @@ static void __stack_chk_fail_local();
 static int isCorrectSymbol(char s);
 static int strlen(char *s);
 static int strcmp(char *s1, char *s2);
-static FileDescriptorRecord getFileDSC(char *fn);
+static FileDescriptorRecord getFileDSCByPath(char *fn);
 static void loadFAT();
 static FileDescriptorRecord getfileInDirDSC(FileDescriptorRecord dirDSC, char *fn);
 
@@ -177,13 +177,14 @@ static void _start()
 
   FileDescriptorRecord fd;
   fd.clusterNHLow = 0;
-  char fn[] = "TEST";
-  char fn3[] = "NC.ICO";
+  char fn[] = "/TEST/001/NC.ICO/";
+  // char fn3[] = "NC.ICO";
   char fn2[13];
-  fd = getfileInDirDSC(fd, fn);
+  //  fd = getfileInDirDSC(fd, fn);
+  fd = getFileDSCByPath(fn);
   println(fileNameDSCToStr(fn2, fd.filename));
-  fd = getfileInDirDSC(fd, fn3);
-  println(fileNameDSCToStr(fn2, fd.filename));
+  // fd = getfileInDirDSC(fd, fn3);
+  // println(fileNameDSCToStr(fn2, fd.filename));
 
   // FileDescriptorRecord fd = getFileDSC(s1);
   // println(intToStr(s1, fd.clusterNHigh));
@@ -919,10 +920,37 @@ static FileDescriptorRecord getfileInDirDSC(FileDescriptorRecord dirDSC, char *f
 }
 
 // 35 возвращает дескриптор файла по его пути
-static FileDescriptorRecord
-getFileDSC(char *fn)
+static FileDescriptorRecord getFileDSCByPath(char *fn)
 {
   FileDescriptorRecord fdr;
+  fdr.clusterNHLow = 0;
+  fdr.filename[0] = 0;
+  uint32_t fnLen = strlen(fn);
+  uint32_t n = 1, m = 0;
+  char curFn[13];
+  if (fn[0] == '/')
+  {
+    while (1)
+    {
+      if (fn[n] != '/' && n < fnLen)
+      {
+        curFn[m] = fn[n];
+        n++;
+        m++;
+      }
+      else
+      {
+        curFn[m] = 0;
+        m = 0;
+        n++;
+        fdr = getfileInDirDSC(fdr, curFn);
+        if (fdr.filename[0] == 0)
+          return fdr;
+        if (n >= fnLen)
+          break;
+      }
+    }
+  }
 
   return fdr;
 }
